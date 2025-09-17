@@ -141,8 +141,8 @@ class EnhancedOceanographicVisualizer:
             fig.add_hline(y=-200, line_dash="dash", line_color="gray", opacity=0.5,
                          annotation_text="Thermocline (200m)", annotation_position="right")
 
-            fig.update_yaxis(autorange='reversed', gridcolor='lightgray')
-            fig.update_xaxis(gridcolor='lightgray')
+            fig.update_yaxes(autorange='reversed', gridcolor='lightgray')
+            fig.update_xaxes(gridcolor='lightgray')
 
             return fig
 
@@ -438,6 +438,286 @@ class EnhancedOceanographicVisualizer:
                 blur=10,
                 max_zoom=1
             ).add_to(map_obj)
+
+    def create_salinity_comparison_arabian_bay(self, data: List[Dict]) -> go.Figure:
+        """Enhanced salinity comparison between Arabian Sea and Bay of Bengal"""
+        try:
+            if not data:
+                return self._create_empty_plot("No data available for salinity comparison")
+
+            # Separate data by region
+            arabian_data = []
+            bay_data = []
+
+            for record in data:
+                region = record.get('region', '')
+                measurements = record.get('measurements', [])
+
+                for measurement in measurements:
+                    if measurement.get('salinity') is not None:
+                        sal_data = {
+                            'depth': measurement.get('depth', 0),
+                            'salinity': measurement.get('salinity'),
+                            'temperature': measurement.get('temperature'),
+                            'float_id': record.get('float_id'),
+                            'timestamp': record.get('timestamp'),
+                            'lat': record.get('location', {}).get('coordinates', [0, 0])[1],
+                            'lon': record.get('location', {}).get('coordinates', [0, 0])[0]
+                        }
+
+                        if 'Arabian Sea' in region:
+                            arabian_data.append(sal_data)
+                        elif 'Bay of Bengal' in region:
+                            bay_data.append(sal_data)
+
+            if not arabian_data and not bay_data:
+                return self._create_empty_plot("No salinity data found for comparison")
+
+            # Create comprehensive comparison figure
+            fig = make_subplots(
+                rows=2, cols=2,
+                subplot_titles=(
+                    'Salinity Profiles by Region',
+                    'Statistical Comparison',
+                    'Salinity vs Temperature',
+                    'Geographic Distribution'
+                ),
+                specs=[[{"type": "scatter"}, {"type": "table"}],
+                       [{"type": "scatter"}, {"type": "scatter"}]]
+            )
+
+            # 1. Depth profiles comparison
+            if arabian_data:
+                arabian_df = pd.DataFrame(arabian_data)
+                depth_bins = np.arange(0, 2000, 50)
+                binned_arabian = []
+
+                for i in range(len(depth_bins)-1):
+                    depth_mask = (arabian_df['depth'] >= depth_bins[i]) & (arabian_df['depth'] < depth_bins[i+1])
+                    if depth_mask.any():
+                        avg_sal = arabian_df[depth_mask]['salinity'].mean()
+                        std_sal = arabian_df[depth_mask]['salinity'].std()
+                        binned_arabian.append({
+                            'depth': depth_bins[i],
+                            'salinity': avg_sal,
+                            'std': std_sal if not pd.isna(std_sal) else 0
+                        })
+
+                if binned_arabian:
+                    binned_df = pd.DataFrame(binned_arabian)
+                    fig.add_trace(
+                        go.Scatter(
+                            x=binned_df['salinity'],
+                            y=-binned_df['depth'],
+                            mode='lines+markers',
+                            name='Arabian Sea',
+                            line=dict(color='#FF6B6B', width=3),
+                            marker=dict(color='#FF6B6B', size=6),
+                            error_x=dict(
+                                type='data',
+                                array=binned_df['std'],
+                                visible=True,
+                                color='#FF6B6B'
+                            ),
+                            hovertemplate='<b>Arabian Sea</b><br>Salinity: %{x:.2f} PSU<br>Depth: %{customdata:.0f}m<br>Std Dev: ±%{error_x:.2f}<extra></extra>',
+                            customdata=binned_df['depth']
+                        ), row=1, col=1
+                    )
+
+            if bay_data:
+                bay_df = pd.DataFrame(bay_data)
+                depth_bins = np.arange(0, 2000, 50)
+                binned_bay = []
+
+                for i in range(len(depth_bins)-1):
+                    depth_mask = (bay_df['depth'] >= depth_bins[i]) & (bay_df['depth'] < depth_bins[i+1])
+                    if depth_mask.any():
+                        avg_sal = bay_df[depth_mask]['salinity'].mean()
+                        std_sal = bay_df[depth_mask]['salinity'].std()
+                        binned_bay.append({
+                            'depth': depth_bins[i],
+                            'salinity': avg_sal,
+                            'std': std_sal if not pd.isna(std_sal) else 0
+                        })
+
+                if binned_bay:
+                    binned_df = pd.DataFrame(binned_bay)
+                    fig.add_trace(
+                        go.Scatter(
+                            x=binned_df['salinity'],
+                            y=-binned_df['depth'],
+                            mode='lines+markers',
+                            name='Bay of Bengal',
+                            line=dict(color='#4ECDC4', width=3),
+                            marker=dict(color='#4ECDC4', size=6),
+                            error_x=dict(
+                                type='data',
+                                array=binned_df['std'],
+                                visible=True,
+                                color='#4ECDC4'
+                            ),
+                            hovertemplate='<b>Bay of Bengal</b><br>Salinity: %{x:.2f} PSU<br>Depth: %{customdata:.0f}m<br>Std Dev: ±%{error_x:.2f}<extra></extra>',
+                            customdata=binned_df['depth']
+                        ), row=1, col=1
+                    )
+
+            # 2. Statistical comparison table
+            stats_data = []
+            if arabian_data:
+                arabian_salinities = [d['salinity'] for d in arabian_data]
+                stats_data.append({
+                    'Region': 'Arabian Sea',
+                    'Count': len(arabian_salinities),
+                    'Mean (PSU)': f"{np.mean(arabian_salinities):.2f}",
+                    'Std Dev': f"{np.std(arabian_salinities):.2f}",
+                    'Min': f"{np.min(arabian_salinities):.2f}",
+                    'Max': f"{np.max(arabian_salinities):.2f}",
+                    'Surface Avg': f"{np.mean([s for d in arabian_data for s in [d['salinity']] if d['depth'] < 50]):.2f}" if any(d['depth'] < 50 for d in arabian_data) else "N/A"
+                })
+
+            if bay_data:
+                bay_salinities = [d['salinity'] for d in bay_data]
+                stats_data.append({
+                    'Region': 'Bay of Bengal',
+                    'Count': len(bay_salinities),
+                    'Mean (PSU)': f"{np.mean(bay_salinities):.2f}",
+                    'Std Dev': f"{np.std(bay_salinities):.2f}",
+                    'Min': f"{np.min(bay_salinities):.2f}",
+                    'Max': f"{np.max(bay_salinities):.2f}",
+                    'Surface Avg': f"{np.mean([s for d in bay_data for s in [d['salinity']] if d['depth'] < 50]):.2f}" if any(d['depth'] < 50 for d in bay_data) else "N/A"
+                })
+
+            if stats_data:
+                stats_df = pd.DataFrame(stats_data)
+                fig.add_trace(
+                    go.Table(
+                        header=dict(
+                            values=list(stats_df.columns),
+                            fill_color='lightblue',
+                            align='center',
+                            font=dict(size=12, color='darkblue')
+                        ),
+                        cells=dict(
+                            values=[stats_df[col] for col in stats_df.columns],
+                            fill_color='lightgray',
+                            align='center',
+                            font=dict(size=11)
+                        )
+                    ), row=1, col=2
+                )
+
+            # 3. Salinity vs Temperature scatter
+            if arabian_data:
+                arabian_df = pd.DataFrame(arabian_data)
+                valid_temp_sal = arabian_df.dropna(subset=['temperature', 'salinity'])
+                if not valid_temp_sal.empty:
+                    fig.add_trace(
+                        go.Scatter(
+                            x=valid_temp_sal['temperature'],
+                            y=valid_temp_sal['salinity'],
+                            mode='markers',
+                            name='Arabian Sea T-S',
+                            marker=dict(
+                                color=valid_temp_sal['depth'],
+                                colorscale='Reds',
+                                size=6,
+                                opacity=0.7,
+                                colorbar=dict(title="Depth (m)", x=1.05)
+                            ),
+                            hovertemplate='<b>Arabian Sea</b><br>Temperature: %{x:.1f}°C<br>Salinity: %{y:.2f} PSU<br>Depth: %{marker.color:.0f}m<extra></extra>'
+                        ), row=2, col=1
+                    )
+
+            if bay_data:
+                bay_df = pd.DataFrame(bay_data)
+                valid_temp_sal = bay_df.dropna(subset=['temperature', 'salinity'])
+                if not valid_temp_sal.empty:
+                    fig.add_trace(
+                        go.Scatter(
+                            x=valid_temp_sal['temperature'],
+                            y=valid_temp_sal['salinity'],
+                            mode='markers',
+                            name='Bay of Bengal T-S',
+                            marker=dict(
+                                color=valid_temp_sal['depth'],
+                                colorscale='Blues',
+                                size=6,
+                                opacity=0.7
+                            ),
+                            hovertemplate='<b>Bay of Bengal</b><br>Temperature: %{x:.1f}°C<br>Salinity: %{y:.2f} PSU<br>Depth: %{marker.color:.0f}m<extra></extra>'
+                        ), row=2, col=1
+                    )
+
+            # 4. Geographic distribution
+            if arabian_data:
+                arabian_df = pd.DataFrame(arabian_data)
+                surface_arabian = arabian_df[arabian_df['depth'] < 50]
+                if not surface_arabian.empty:
+                    fig.add_trace(
+                        go.Scatter(
+                            x=surface_arabian['lon'],
+                            y=surface_arabian['lat'],
+                            mode='markers',
+                            name='Arabian Sea Locations',
+                            marker=dict(
+                                color=surface_arabian['salinity'],
+                                colorscale='YlOrRd',
+                                size=8,
+                                opacity=0.8,
+                                colorbar=dict(title="Surface Salinity (PSU)", x=1.1)
+                            ),
+                            hovertemplate='<b>Arabian Sea</b><br>Lat: %{y:.2f}°<br>Lon: %{x:.2f}°<br>Salinity: %{marker.color:.2f} PSU<extra></extra>'
+                        ), row=2, col=2
+                    )
+
+            if bay_data:
+                bay_df = pd.DataFrame(bay_data)
+                surface_bay = bay_df[bay_df['depth'] < 50]
+                if not surface_bay.empty:
+                    fig.add_trace(
+                        go.Scatter(
+                            x=surface_bay['lon'],
+                            y=surface_bay['lat'],
+                            mode='markers',
+                            name='Bay of Bengal Locations',
+                            marker=dict(
+                                color=surface_bay['salinity'],
+                                colorscale='YlGnBu',
+                                size=8,
+                                opacity=0.8
+                            ),
+                            hovertemplate='<b>Bay of Bengal</b><br>Lat: %{y:.2f}°<br>Lon: %{x:.2f}°<br>Salinity: %{marker.color:.2f} PSU<extra></extra>'
+                        ), row=2, col=2
+                    )
+
+            # Update layout
+            fig.update_xaxes(title_text="Salinity (PSU)", row=1, col=1)
+            fig.update_yaxes(title_text="Depth (m)", row=1, col=1, autorange='reversed')
+
+            fig.update_xaxes(title_text="Temperature (°C)", row=2, col=1)
+            fig.update_yaxes(title_text="Salinity (PSU)", row=2, col=1)
+
+            fig.update_xaxes(title_text="Longitude", row=2, col=2)
+            fig.update_yaxes(title_text="Latitude", row=2, col=2)
+
+            fig.update_layout(
+                title={
+                    'text': "Comprehensive Salinity Comparison: Arabian Sea vs Bay of Bengal",
+                    'x': 0.5,
+                    'xanchor': 'center',
+                    'font': {'size': 16, 'family': 'Arial Black'}
+                },
+                template='plotly_white',
+                height=800,
+                hovermode='closest',
+                showlegend=True
+            )
+
+            return fig
+
+        except Exception as e:
+            logger.error(f"Error creating salinity comparison: {e}")
+            return self._create_empty_plot(f"Error: {str(e)}")
 
     def create_regional_comparison(self, data: List[Dict], parameter: str = 'temperature') -> go.Figure:
         """Create advanced regional comparison visualization"""

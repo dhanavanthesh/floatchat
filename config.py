@@ -30,7 +30,7 @@ class Config:
 
     # AI/LLM configuration
     GROQ_API_KEY = os.getenv('GROQ_API_KEY')
-    GROQ_MODEL = os.getenv('GROQ_MODEL', 'llama-3.1-80b-instant')
+    GROQ_MODEL = os.getenv('GROQ_MODEL', 'llama-3.3-70b-versatile')
     MAX_TOKENS = int(os.getenv('MAX_TOKENS', '4000'))
     TEMPERATURE = float(os.getenv('TEMPERATURE', '0.1'))
 

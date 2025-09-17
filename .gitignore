@@ -118,7 +118,7 @@ chromadb_storage
 venv/
 # Nuxt.js
 .nuxt/
-
+data/
 # Vuepress
 .vuepress/dist
 

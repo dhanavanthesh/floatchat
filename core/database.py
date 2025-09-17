@@ -9,8 +9,6 @@ from datetime import datetime, timedelta
 import pymongo
 from pymongo import MongoClient, GEOSPHERE, TEXT
 from pymongo.errors import ConnectionFailure, DuplicateKeyError
-import chromadb
-from chromadb.config import Settings
 import numpy as np
 from config import config
 
@@ -101,6 +99,15 @@ class UnifiedDatabaseHandler:
     def setup_chromadb(self):
         """Setup ChromaDB for vector search and RAG"""
         try:
+            # Skip ChromaDB if not available
+            try:
+                import chromadb
+                from chromadb.config import Settings
+            except ImportError:
+                logger.warning("ChromaDB not available, skipping vector search")
+                self.chroma_collection = None
+                return
+
             self.chroma_client = chromadb.PersistentClient(
                 path=self.chromadb_path,
                 settings=Settings(
@@ -241,13 +248,32 @@ class UnifiedDatabaseHandler:
 
             if bulk_operations:
                 result = self.mongo_collection.bulk_write(bulk_operations, ordered=False)
-                logger.info(f"Inserted/Updated {result.upserted_count + result.modified_count} documents")
+
+                # Handle bulk write errors gracefully
+                if hasattr(result, 'bulk_api_result') and result.bulk_api_result.get('writeErrors'):
+                    duplicate_errors = sum(1 for error in result.bulk_api_result['writeErrors']
+                                         if error.get('code') == 11000)
+                    if duplicate_errors > 0:
+                        logger.info(f"Skipped {duplicate_errors} duplicate records (already exist)")
+
+                inserted_count = result.upserted_count + result.modified_count
+                logger.info(f"Successfully processed {inserted_count} documents")
+
+                if result.upserted_count > 0:
+                    logger.info(f"New records inserted: {result.upserted_count}")
+                if result.modified_count > 0:
+                    logger.info(f"Existing records updated: {result.modified_count}")
 
             return True
 
         except Exception as e:
-            logger.error(f"Error inserting ARGO data: {e}")
-            return False
+            # Check if it's just duplicate key errors
+            if "duplicate key error" in str(e).lower() or "11000" in str(e):
+                logger.info("Some duplicate records were skipped - this is normal for real-time data updates")
+                return True
+            else:
+                logger.error(f"Error inserting ARGO data: {e}")
+                return False
 
     def get_floats_by_region(self, region: str, limit: int = 1000) -> List[Dict]:
         """Get floats by geographic region"""
@@ -338,6 +364,14 @@ class UnifiedDatabaseHandler:
         except Exception as e:
             logger.error(f"Error executing aggregation: {e}")
             return []
+
+    def get_total_count(self) -> int:
+        """Get total count of documents in the collection"""
+        try:
+            return self.mongo_collection.count_documents({})
+        except Exception as e:
+            logger.error(f"Error getting total count: {e}")
+            return 0
 
     def get_database_statistics(self) -> Dict[str, Any]:
         """Get comprehensive database statistics"""
