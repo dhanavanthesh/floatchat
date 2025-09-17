@@ -5,7 +5,6 @@ Advanced Plotly and Folium visualizations for ARGO data analysis
 
 import logging
 import numpy as np
-import pandas as pd
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 import plotly.graph_objects as go
@@ -14,6 +13,55 @@ from plotly.subplots import make_subplots
 import folium
 from folium import plugins
 from config import config
+
+# Handle pandas import issue
+try:
+    import pandas as pd
+    # Verify pandas is working correctly
+    if not hasattr(pd, 'DataFrame'):
+        raise ImportError("Pandas DataFrame not available")
+    PANDAS_AVAILABLE = True
+except ImportError:
+    # Create a minimal pandas replacement for basic functionality
+    class MockPandas:
+        @staticmethod
+        def DataFrame(data):
+            """Simple DataFrame replacement"""
+            if isinstance(data, list) and data:
+                return MockDataFrame(data)
+            return MockDataFrame([])
+
+        @staticmethod
+        def isna(value):
+            return value is None or (hasattr(value, '__iter__') and len(str(value).strip()) == 0)
+
+    class MockDataFrame:
+        def __init__(self, data):
+            self.data = data if isinstance(data, list) else []
+
+        def __getitem__(self, key):
+            if isinstance(key, str):
+                return [item.get(key) for item in self.data if isinstance(item, dict)]
+            return self.data
+
+        def dropna(self, subset=None):
+            if not subset:
+                return self
+            filtered_data = []
+            for item in self.data:
+                if all(item.get(col) is not None for col in subset):
+                    filtered_data.append(item)
+            return MockDataFrame(filtered_data)
+
+        def empty(self):
+            return len(self.data) == 0
+
+        @property
+        def empty(self):
+            return len(self.data) == 0
+
+    pd = MockPandas()
+    PANDAS_AVAILABLE = False
 
 logging.basicConfig(level=getattr(logging, config.LOG_LEVEL))
 logger = logging.getLogger(__name__)
@@ -77,37 +125,78 @@ class EnhancedOceanographicVisualizer:
             if not df_list:
                 return self._create_empty_plot("No temperature measurements found")
 
-            df = pd.DataFrame(df_list)
+            # Use simple list processing instead of DataFrame for compatibility
+            if PANDAS_AVAILABLE:
+                df = pd.DataFrame(df_list)
+            else:
+                # Process data without pandas
+                regions_data = {}
+                for item in df_list:
+                    region = item.get('region', 'Unknown')
+                    if region not in regions_data:
+                        regions_data[region] = []
+                    regions_data[region].append(item)
 
             # Create main figure
             fig = go.Figure()
 
             # Plot by region with enhanced styling
-            for region in df['region'].unique():
-                region_data = df[df['region'] == region]
-                color = self.color_palette.get(region, '#1f77b4')
+            if PANDAS_AVAILABLE:
+                # Use pandas DataFrame approach
+                for region in df['region'].unique():
+                    region_data = df[df['region'] == region]
+                    color = self.color_palette.get(region, '#1f77b4')
 
-                # Add scatter plot with enhanced hover information
-                fig.add_trace(go.Scatter(
-                    x=region_data['temperature'],
-                    y=-region_data['depth'],
-                    mode='markers+lines',
-                    name=region,
-                    marker=dict(
-                        color=color,
-                        size=6,
-                        opacity=0.7,
-                        line=dict(width=1, color='white')
-                    ),
-                    line=dict(color=color, width=2),
-                    hovertemplate='<b>%{fullData.name}</b><br>' +
-                                'Temperature: %{x:.2f}°C<br>' +
-                                'Depth: %{customdata[0]:.1f}m<br>' +
-                                'Float ID: %{customdata[1]}<br>' +
-                                'Platform: %{customdata[2]}<br>' +
-                                'Date: %{customdata[3]}<extra></extra>',
-                    customdata=region_data[['depth', 'float_id', 'platform_type', 'timestamp']].values
-                ))
+                    # Add scatter plot with enhanced hover information
+                    fig.add_trace(go.Scatter(
+                        x=region_data['temperature'],
+                        y=-region_data['depth'],
+                        mode='markers+lines',
+                        name=region,
+                        marker=dict(
+                            color=color,
+                            size=6,
+                            opacity=0.7,
+                            line=dict(width=1, color='white')
+                        ),
+                        line=dict(color=color, width=2),
+                        hovertemplate='<b>%{fullData.name}</b><br>' +
+                                    'Temperature: %{x:.2f}°C<br>' +
+                                    'Depth: %{customdata[0]:.1f}m<br>' +
+                                    'Float ID: %{customdata[1]}<br>' +
+                                    'Platform: %{customdata[2]}<br>' +
+                                    'Date: %{customdata[3]}<extra></extra>',
+                        customdata=region_data[['depth', 'float_id', 'platform_type', 'timestamp']].values
+                    ))
+            else:
+                # Use simple list processing approach
+                for region, region_items in regions_data.items():
+                    color = self.color_palette.get(region, '#1f77b4')
+
+                    temperatures = [item['temperature'] for item in region_items]
+                    depths = [item['depth'] for item in region_items]
+                    float_ids = [item['float_id'] for item in region_items]
+                    platforms = [item['platform_type'] for item in region_items]
+                    timestamps = [item['timestamp'] for item in region_items]
+
+                    # Add scatter plot with simplified hover information
+                    fig.add_trace(go.Scatter(
+                        x=temperatures,
+                        y=[-d for d in depths],  # Negative depth for proper orientation
+                        mode='markers+lines',
+                        name=region,
+                        marker=dict(
+                            color=color,
+                            size=6,
+                            opacity=0.7,
+                            line=dict(width=1, color='white')
+                        ),
+                        line=dict(color=color, width=2),
+                        hovertemplate='<b>%{fullData.name}</b><br>' +
+                                    'Temperature: %{x:.2f}°C<br>' +
+                                    'Depth: %{y:.1f}m<br>' +
+                                    '<extra></extra>'
+                    ))
 
             # Enhanced layout with better styling
             fig.update_layout(

@@ -34,6 +34,15 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# Disable file watcher that might cause refreshes
+import os
+os.environ["STREAMLIT_SERVER_FILE_WATCHER_TYPE"] = "none"
+
+# Global flag to prevent visualization interference
+if 'viz_system_initialized' not in st.session_state:
+    st.session_state.viz_system_initialized = True
+    st.session_state.viz_render_count = 0
+
 def show_loading_animation(message: str, duration: float = 2.0):
     """Show animated loading with progress bar"""
     progress_bar = st.progress(0)
@@ -133,15 +142,18 @@ def generate_context_aware_tabs(query: str, data: List[Dict]) -> List[tuple]:
         if has_bgc:
             tabs.append(("🔬 BGC vs Depth", "bgc"))
 
-    else:  # general
+    else:  # general - show comprehensive visualizations
         if has_geo:
             tabs.append(("🗺️ Geographic Overview", "geographic"))
         if has_temp:
-            tabs.append(("🌡️ Temperature Data", "temperature"))
+            tabs.append(("🌡️ Temperature Analysis", "temperature"))
+            tabs.append(("📊 Temperature vs Depth", "depth"))
         if has_sal:
-            tabs.append(("🧂 Salinity Data", "salinity"))
+            tabs.append(("🧂 Salinity Analysis", "salinity"))
+        if has_temp and has_sal:
+            tabs.append(("🔄 T-S Diagram", "ts_diagram"))
         if has_bgc:
-            tabs.append(("🔬 BGC Data", "bgc"))
+            tabs.append(("🔬 BGC Parameters", "bgc"))
 
     # Always add summary if we have data
     if data:
@@ -149,13 +161,39 @@ def generate_context_aware_tabs(query: str, data: List[Dict]) -> List[tuple]:
 
     return tabs[:4]  # Limit to 4 tabs max
 
-def create_comprehensive_visualizations(results: Dict, query: str, viz):
-    """Create comprehensive visualizations with proper tab handling"""
+def create_comprehensive_visualizations(results: Dict, query: str, viz, message_idx: int = 0):
+    """Create comprehensive visualizations - simple and persistent approach"""
     try:
         data = results.get('data', [])
         if not data:
             st.warning("No data available for visualization.")
             return
+
+        # Increment render count for debugging
+        st.session_state.viz_render_count += 1
+        render_id = st.session_state.viz_render_count
+
+        # Create multiple unique identifiers to prevent recreation
+        query_hash = abs(hash(f"{query}_{len(data)}_{message_idx}"))
+        viz_created_key = f"viz_shown_{query_hash}"
+        global_viz_key = f"global_viz_{message_idx}"
+
+        # Check multiple conditions to prevent recreation
+        if viz_created_key in st.session_state or global_viz_key in st.session_state:
+            st.info(f"📊 **Visualizations already rendered** (render #{render_id})")
+            return
+
+        # Mark as created with multiple keys to ensure persistence
+        st.session_state[viz_created_key] = True
+        st.session_state[global_viz_key] = True
+        st.session_state[f"viz_timestamp_{message_idx}"] = datetime.now()
+
+        # Show render information
+        st.info(f"🎨 **Creating visualizations** (render #{render_id})")
+
+        # Force a small delay to ensure session state is saved
+        import time
+        time.sleep(0.1)
 
         # Generate context-aware tabs based on query
         dynamic_tabs = generate_context_aware_tabs(query, data)
@@ -164,127 +202,234 @@ def create_comprehensive_visualizations(results: Dict, query: str, viz):
             st.warning("No appropriate visualizations found for this query.")
             return
 
-        # Create tabs
-        tab_objects = st.tabs([tab[0] for tab in dynamic_tabs])
+        # Create tabs with component isolation to prevent unregistration
+        st.markdown("### 📊 Oceanographic Data Visualizations")
 
-        # Process each tab
-        for i, (tab_name, tab_type) in enumerate(dynamic_tabs):
-            if i < len(tab_objects):
-                with tab_objects[i]:
-                    if tab_type == 'depth' or tab_type == 'temperature':
-                        st.markdown("### Temperature vs Depth Analysis")
-                        try:
-                            depth_fig = viz.create_depth_profile_plot(data)
-                            if depth_fig:
-                                st.plotly_chart(depth_fig, use_container_width=True)
-                            else:
-                                st.warning("Could not generate depth profile plot")
-                        except Exception as e:
-                            st.error(f"Error creating depth plot: {e}")
+        # Create tabs with explicit state preservation
+        with st.container():
+            tab_objects = st.tabs([tab[0] for tab in dynamic_tabs])
 
-                        st.markdown("### Temperature-Salinity Relationship")
-                        try:
-                            ts_fig = viz.create_ts_diagram(data)
-                            if ts_fig:
-                                st.plotly_chart(ts_fig, use_container_width=True)
-                            else:
-                                st.warning("Could not generate T-S diagram")
-                        except Exception as e:
-                            st.error(f"Error creating T-S diagram: {e}")
+            # Process each tab with direct visualization calls
+            for i, (tab_name, tab_type) in enumerate(dynamic_tabs):
+                if i < len(tab_objects):
+                    with tab_objects[i]:
+                        # Add component lock to prevent unregistration
+                        component_lock_key = f"component_lock_{message_idx}_{i}"
+                        if component_lock_key not in st.session_state:
+                            st.session_state[component_lock_key] = True
 
-                    elif tab_type == 'geographic':
-                        st.markdown("### Float Locations and Trajectories")
-                        map_fig = viz.create_float_trajectory_map(data)
-                        st_folium.st_folium(map_fig, width=700, height=500)
+                        if tab_type == 'depth' or tab_type == 'temperature':
+                            st.markdown("### Temperature vs Depth Analysis")
+                            try:
+                                depth_fig = viz.create_temperature_depth_profile(data)
+                                if depth_fig and hasattr(depth_fig, 'data') and len(depth_fig.data) > 0:
+                                    st.plotly_chart(depth_fig, use_container_width=True, key=f"simple_depth_{message_idx}_{i}")
+                                else:
+                                    st.warning("Could not generate depth profile plot")
+                            except Exception as e:
+                                st.error(f"Error creating depth plot: {e}")
 
-                        # Regional statistics
-                        regions = {}
-                        for item in data:
-                            region = item.get('region', 'Unknown')
-                            regions[region] = regions.get(region, 0) + 1
+                            st.markdown("### Temperature-Salinity Relationship")
+                            try:
+                                ts_fig = viz.create_ts_diagram(data)
+                                if ts_fig and hasattr(ts_fig, 'data') and len(ts_fig.data) > 0:
+                                    st.plotly_chart(ts_fig, use_container_width=True, key=f"simple_ts_{message_idx}_{i}")
+                                else:
+                                    st.warning("Could not generate T-S diagram")
+                            except Exception as e:
+                                st.error(f"Error creating T-S diagram: {e}")
 
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.metric("Total Profiles", len(data))
-                        with col2:
-                            st.metric("Unique Regions", len(regions))
+                        elif tab_type == 'geographic':
+                            st.markdown("### Float Locations and Trajectories")
+                            try:
+                                # Use Plotly map instead of Folium to avoid iframe issues
+                                import plotly.graph_objects as go
 
-                        for region, count in regions.items():
-                            st.write(f"**{region}**: {count} profiles")
+                                # Extract coordinates from data
+                                lats = []
+                                lons = []
+                                float_ids = []
+                                regions = []
 
-                    elif tab_type == 'summary':
-                        st.markdown("### Statistical Analysis")
+                                for item in data:
+                                    location = item.get('location', {})
+                                    if location and 'coordinates' in location:
+                                        coords = location['coordinates']
+                                        lons.append(coords[0])
+                                        lats.append(coords[1])
+                                        float_ids.append(item.get('float_id', 'Unknown'))
+                                        regions.append(item.get('region', 'Unknown'))
 
-                        # Calculate statistics
-                        all_temps = []
-                        all_salinities = []
-                        depths = []
+                                if lats and lons:
+                                    # Create Plotly map
+                                    fig = go.Figure()
 
-                        for item in data:
-                            for measurement in item.get('measurements', []):
-                                if measurement.get('temperature'):
-                                    all_temps.append(measurement['temperature'])
-                                    depths.append(measurement.get('depth', 0))
-                                if measurement.get('salinity'):
-                                    all_salinities.append(measurement['salinity'])
+                                    # Add scatter points for each region
+                                    for region in set(regions):
+                                        region_indices = [i for i, r in enumerate(regions) if r == region]
+                                        region_lats = [lats[i] for i in region_indices]
+                                        region_lons = [lons[i] for i in region_indices]
+                                        region_floats = [float_ids[i] for i in region_indices]
 
-                        if all_temps and len(all_temps) > 0:
-                            col1, col2, col3 = st.columns(3)
+                                        color = '#FF6B6B' if 'Arabian' in region else '#4ECDC4' if 'Bengal' in region else '#45B7D1'
+
+                                        fig.add_trace(go.Scattermapbox(
+                                            lat=region_lats,
+                                            lon=region_lons,
+                                            mode='markers',
+                                            marker=dict(size=10, color=color),
+                                            text=[f"Float: {fid}<br>Region: {region}" for fid in region_floats],
+                                            name=region,
+                                            hovertemplate='<b>%{text}</b><br>Lat: %{lat:.3f}<br>Lon: %{lon:.3f}<extra></extra>'
+                                        ))
+
+                                    fig.update_layout(
+                                        mapbox=dict(
+                                            style="open-street-map",
+                                            center=dict(lat=sum(lats)/len(lats), lon=sum(lons)/len(lons)),
+                                            zoom=4
+                                        ),
+                                        height=500,
+                                        margin={"r":0,"t":0,"l":0,"b":0},
+                                        showlegend=True
+                                    )
+
+                                    st.plotly_chart(fig, use_container_width=True, key=f"plotly_map_{message_idx}_{i}")
+                                else:
+                                    st.warning("No location data available for mapping")
+                            except Exception as e:
+                                st.error(f"Error creating map: {e}")
+
+                            # Regional statistics
+                            regions = {}
+                            for item in data:
+                                region = item.get('region', 'Unknown')
+                                regions[region] = regions.get(region, 0) + 1
+
+                            col1, col2 = st.columns(2)
                             with col1:
-                                st.metric("Avg Temperature", f"{sum(all_temps)/len(all_temps):.2f}°C")
+                                st.metric("Total Profiles", len(data))
                             with col2:
-                                st.metric("Avg Salinity", f"{sum(all_salinities)/len(all_salinities):.2f} PSU" if all_salinities and len(all_salinities) > 0 else "N/A")
-                            with col3:
-                                st.metric("Max Depth", f"{max(depths):.0f}m" if depths else "N/A")
-                        else:
-                            st.info("No temperature/salinity data available for statistics.")
+                                st.metric("Unique Regions", len(regions))
 
-                    elif tab_type == 'bgc':
-                        st.markdown("### Biogeochemical Parameters")
+                            for region, count in regions.items():
+                                st.write(f"**{region}**: {count} profiles")
 
-                        # Check for BGC data
-                        has_bgc = any(
-                            any(m.get('oxygen') or m.get('chlorophyll') or m.get('nitrate')
-                                for m in item.get('measurements', []))
-                            for item in data
-                        )
+                        elif tab_type == 'ts_diagram':
+                            st.markdown("### Temperature-Salinity Diagram")
+                            try:
+                                ts_fig = viz.create_ts_diagram(data)
+                                if ts_fig and hasattr(ts_fig, 'data') and len(ts_fig.data) > 0:
+                                    st.plotly_chart(ts_fig, use_container_width=True, key=f"simple_ts_standalone_{message_idx}_{i}")
+                                else:
+                                    st.warning("Could not generate T-S diagram")
+                            except Exception as e:
+                                st.error(f"Error creating T-S diagram: {e}")
 
-                        if has_bgc:
-                            bgc_fig = viz.create_bgc_multi_parameter_plot(data)
-                            st.plotly_chart(bgc_fig, use_container_width=True)
-                        else:
-                            st.info("No BGC parameters available in this dataset. BGC floats measure oxygen, chlorophyll, and nitrate levels.")
+                        elif tab_type == 'salinity':
+                            st.markdown("### Salinity Analysis")
+                            try:
+                                sal_fig = viz.create_temperature_depth_profile(data, title="Salinity-Depth Profile")
+                                if sal_fig and hasattr(sal_fig, 'data') and len(sal_fig.data) > 0:
+                                    st.plotly_chart(sal_fig, use_container_width=True, key=f"simple_salinity_{message_idx}_{i}")
+                                else:
+                                    st.warning("Could not generate salinity profile")
+                            except Exception as e:
+                                st.error(f"Error creating salinity analysis: {e}")
 
-                    elif tab_type == 'salinity_comparison':
-                        st.markdown("### Enhanced Salinity Analysis: Arabian Sea vs Bay of Bengal")
+                        elif tab_type == 'summary':
+                            st.markdown("### Statistical Analysis")
 
-                        # Check if we have data from both regions for comparison
-                        regions_in_data = set(item.get('region', '') for item in data)
-                        has_arabian = any('Arabian Sea' in region for region in regions_in_data)
-                        has_bay = any('Bay of Bengal' in region for region in regions_in_data)
+                            # Calculate statistics
+                            all_temps = []
+                            all_salinities = []
+                            depths = []
 
-                        if has_arabian or has_bay:
-                            salinity_comparison_fig = viz.create_salinity_comparison_arabian_bay(data)
-                            st.plotly_chart(salinity_comparison_fig, use_container_width=True)
+                            for item in data:
+                                for measurement in item.get('measurements', []):
+                                    if measurement.get('temperature'):
+                                        all_temps.append(measurement['temperature'])
+                                        depths.append(measurement.get('depth', 0))
+                                    if measurement.get('salinity'):
+                                        all_salinities.append(measurement['salinity'])
 
-                            # Add oceanographic context
-                            if has_arabian and has_bay:
-                                st.markdown("""
-                                **🌊 Oceanographic Context:**
+                            if all_temps and len(all_temps) > 0:
+                                col1, col2, col3 = st.columns(3)
+                                with col1:
+                                    st.metric("Avg Temperature", f"{sum(all_temps)/len(all_temps):.2f}°C")
+                                with col2:
+                                    st.metric("Avg Salinity", f"{sum(all_salinities)/len(all_salinities):.2f} PSU" if all_salinities and len(all_salinities) > 0 else "N/A")
+                                with col3:
+                                    st.metric("Max Depth", f"{max(depths):.0f}m" if depths else "N/A")
+                            else:
+                                st.info("No temperature/salinity data available for statistics.")
 
-                                - **Arabian Sea**: Higher salinity (35.5-36.5 PSU) due to high evaporation and limited freshwater input
-                                - **Bay of Bengal**: Lower salinity (33-35 PSU) due to significant river discharge from Ganges-Brahmaputra system
-                                - **Seasonal Variation**: Monsoon impacts both regions differently, with Bay of Bengal showing more dramatic freshening
-                                - **Depth Stratification**: Arabian Sea shows stronger haline stratification, Bay of Bengal shows temperature-dominated stratification
-                                """)
-                            elif has_arabian:
-                                st.info("**Arabian Sea Data**: Showing high-salinity waters characteristic of this evaporation-dominated basin.")
-                            elif has_bay:
-                                st.info("**Bay of Bengal Data**: Showing lower-salinity waters influenced by major river systems.")
-                        else:
-                            st.info("Enhanced salinity comparison requires data from Arabian Sea and/or Bay of Bengal regions.")
+                        elif tab_type == 'bgc':
+                            st.markdown("### Biogeochemical Parameters")
 
-        st.success("✅ All visualizations generated successfully!")
+                            # Check for BGC data
+                            has_bgc = any(
+                                any(m.get('oxygen') or m.get('chlorophyll') or m.get('nitrate')
+                                    for m in item.get('measurements', []))
+                                for item in data
+                            )
+
+                            if has_bgc:
+                                try:
+                                    bgc_fig = viz.create_bgc_multi_parameter_plot(data)
+                                    if bgc_fig and hasattr(bgc_fig, 'data') and len(bgc_fig.data) > 0:
+                                        st.plotly_chart(bgc_fig, use_container_width=True, key=f"simple_bgc_{message_idx}_{i}")
+                                    else:
+                                        st.warning("Could not generate BGC plot")
+                                except Exception as e:
+                                    st.error(f"Error creating BGC plot: {e}")
+                            else:
+                                st.info("No BGC parameters available in this dataset. BGC floats measure oxygen, chlorophyll, and nitrate levels.")
+
+                        elif tab_type == 'salinity_comparison':
+                            st.markdown("### Enhanced Salinity Analysis: Arabian Sea vs Bay of Bengal")
+
+                            # Check if we have data from both regions for comparison
+                            regions_in_data = set(item.get('region', '') for item in data)
+                            has_arabian = any('Arabian Sea' in region for region in regions_in_data)
+                            has_bay = any('Bay of Bengal' in region for region in regions_in_data)
+
+                            if has_arabian or has_bay:
+                                try:
+                                    salinity_comparison_fig = viz.create_salinity_comparison_arabian_bay(data)
+                                    if salinity_comparison_fig and hasattr(salinity_comparison_fig, 'data') and len(salinity_comparison_fig.data) > 0:
+                                        st.plotly_chart(salinity_comparison_fig, use_container_width=True, key=f"simple_sal_comp_{message_idx}_{i}")
+                                    else:
+                                        st.warning("Could not generate salinity comparison plot")
+                                except Exception as e:
+                                    st.error(f"Error creating salinity comparison: {e}")
+
+                                # Add oceanographic context
+                                if has_arabian and has_bay:
+                                    st.markdown("""
+                                    **🌊 Oceanographic Context:**
+
+                                    - **Arabian Sea**: Higher salinity (35.5-36.5 PSU) due to high evaporation and limited freshwater input
+                                    - **Bay of Bengal**: Lower salinity (33-35 PSU) due to significant river discharge from Ganges-Brahmaputra system
+                                    - **Seasonal Variation**: Monsoon impacts both regions differently, with Bay of Bengal showing more dramatic freshening
+                                    - **Depth Stratification**: Arabian Sea shows stronger haline stratification, Bay of Bengal shows temperature-dominated stratification
+                                    """)
+                                elif has_arabian:
+                                    st.info("**Arabian Sea Data**: Showing high-salinity waters characteristic of this evaporation-dominated basin.")
+                                elif has_bay:
+                                    st.info("**Bay of Bengal Data**: Showing lower-salinity waters influenced by major river systems.")
+                            else:
+                                st.info("Enhanced salinity comparison requires data from Arabian Sea and/or Bay of Bengal regions.")
+
+        st.success(f"✅ All visualizations generated successfully! (render #{render_id})")
+
+        # Force session state save and prevent any auto-refresh
+        st.session_state[f"viz_completed_{message_idx}"] = True
+
+        # Add a barrier to prevent recreation
+        with st.container():
+            st.markdown("---")
+            st.caption("💡 **Tip**: These visualizations are now persistent. Scroll up to see all tabs if needed.")
 
     except Exception as e:
         st.error(f"Visualization error: {str(e)}")
@@ -744,7 +889,7 @@ def initialize_system_components():
             st.session_state.system_ready = True
             st.success("🎉 **FloatChat Production System Ready!**")
             time.sleep(1)
-            st.rerun()
+            # Don't rerun immediately after system startup
 
 def enhanced_query_processing(query: str) -> Dict[str, Any]:
     """Enhanced query processing with real-time feedback"""
@@ -827,7 +972,7 @@ def setup_enhanced_sidebar():
                             if success:
                                 st.session_state.sample_data_loaded = True
                                 st.success(f"✅ Generated {len(sample_documents)} sample profiles!")
-                                st.rerun()
+                                # Don't rerun immediately - let user continue
                             else:
                                 st.error("❌ Failed to insert sample data")
             except Exception as e:
@@ -840,7 +985,7 @@ def setup_enhanced_sidebar():
                         if success:
                             st.session_state.sample_data_loaded = True
                             st.success(f"✅ Generated {len(sample_documents)} sample profiles!")
-                            st.rerun()
+                            # Don't rerun immediately
         else:
             st.error("Database handler not available")
 
@@ -863,7 +1008,7 @@ def setup_enhanced_sidebar():
                         success = st.session_state.db_handler.insert_argo_data(sample_documents)
                         if success:
                             st.success(f"✅ Generated {len(sample_documents)} new profiles!")
-                            st.rerun()
+                            # Don't rerun immediately
                         else:
                             st.error("❌ Failed to insert new data")
 
@@ -874,7 +1019,7 @@ def setup_enhanced_sidebar():
                     if key.startswith(('db_', 'ai_', 'vis', 'sample_')):
                         del st.session_state[key]
                 st.success("✅ Cache cleared!")
-                st.rerun()
+                # Don't rerun immediately to prevent visualization loss
 
         # Query suggestions
         st.markdown("### 💡 Try These Queries")
@@ -919,26 +1064,20 @@ def main():
         ]
 
     # Display chat history
-    for message in st.session_state.messages:
+    for idx, message in enumerate(st.session_state.messages):
         with st.chat_message(message["role"]):
             # Display the text content
             st.markdown(message["content"])
 
-            # If this is an assistant message with visualizations, recreate them
+            # If this is an assistant message with visualizations, show reference only
             if (message["role"] == "assistant" and
                 message.get("has_visualizations") and
-                message.get("query_results") and
-                st.session_state.get('visualizer')):
+                message.get("query_results")):
 
                 results = message["query_results"]
-                query = message.get("query", "")
-
                 if results.get('success') and results.get('data'):
                     st.markdown(f"**Analysis Complete**: {len(results['data'])} profiles found")
-
-                    # Recreate visualizations
-                    with st.spinner("📊 Loading visualizations..."):
-                        create_comprehensive_visualizations(results, query, st.session_state.visualizer)
+                    st.info("📊 **Visualizations shown above when this message was first created**")
 
     # Handle auto-query from sidebar
     if 'auto_query' in st.session_state:
@@ -965,7 +1104,8 @@ def main():
                     # Create comprehensive visualizations
                     if st.session_state.get('visualizer'):
                         with st.spinner("📊 Creating comprehensive oceanographic visualizations..."):
-                            create_comprehensive_visualizations(results, user_input, st.session_state.visualizer)
+                            # Use a unique index for auto-query visualizations
+                            create_comprehensive_visualizations(results, user_input, st.session_state.visualizer, len(st.session_state.messages))
 
                     # Generate intelligent AI response based on data analysis
                     with st.spinner("🧠 Generating detailed analysis..."):
@@ -975,44 +1115,72 @@ def main():
                     ai_response = "I'm having trouble finding data for that query. I can help you with: temperature/salinity profiles, regional comparisons, BGC parameters, or data export. Please try rephrasing your question or use one of the suggested queries."
 
                 st.markdown(ai_response)
-                st.session_state.messages.append({"role": "assistant", "content": ai_response})
+                # Store message with metadata to prevent rerun issues
+                complete_response = {
+                    "role": "assistant",
+                    "content": ai_response,
+                    "has_visualizations": False,
+                    "query_results": results
+                }
+                st.session_state.messages.append(complete_response)
 
-    # Chat input
+    # Chat input with controlled processing
     if prompt := st.chat_input("Ask about oceanographic data..."):
-        # Add user message
+        # Add user message immediately
         st.session_state.messages.append({"role": "user", "content": prompt})
 
-        # Process the query and generate response
-        with st.spinner("🔄 Processing your oceanographic query..."):
-            results = enhanced_query_processing(prompt)
+        # Set a flag to process in the next run without triggering another refresh
+        st.session_state.processing_query = prompt
+        st.session_state.show_processing = True
 
-        # Prepare complete response
-        if results.get('success') and results.get('data'):
-            # Generate AI response first
-            with st.spinner("🧠 Generating comprehensive analysis..."):
-                ai_response = generate_intelligent_response(results['data'], prompt)
+    # Process query if flagged (prevents immediate refresh)
+    if st.session_state.get('processing_query') and st.session_state.get('show_processing'):
+        prompt = st.session_state.processing_query
 
-            # Store comprehensive response with metadata
-            complete_response = {
-                "role": "assistant",
-                "content": ai_response,
-                "query_results": results,
-                "has_visualizations": True,
-                "query": prompt
-            }
-        else:
-            ai_response = "I understand you're asking about oceanographic data. I can help you explore temperature profiles, salinity data, BGC parameters, and regional comparisons. Could you try rephrasing your question or specify a location like 'Mumbai' or 'Arabian Sea'?"
-            complete_response = {
-                "role": "assistant",
-                "content": ai_response,
-                "has_visualizations": False
-            }
+        # Clear the flags to prevent reprocessing
+        del st.session_state.processing_query
+        del st.session_state.show_processing
 
-        # Add to session state
-        st.session_state.messages.append(complete_response)
+        # Create a placeholder for the assistant response
+        with st.chat_message("assistant"):
+            with st.spinner("🔄 Processing your oceanographic query..."):
+                results = enhanced_query_processing(prompt)
 
-        # Force rerun to display the new message
-        st.rerun()
+            if results.get('success') and results.get('data'):
+                # Show results immediately
+                st.markdown(f"**Query Results**: Found {len(results['data'])} oceanographic profiles")
+
+                # Create and display comprehensive visualizations with all tabs immediately
+                if st.session_state.get('visualizer'):
+                    with st.spinner("📊 Creating comprehensive oceanographic visualizations..."):
+                        current_msg_idx = len(st.session_state.messages)
+                        create_comprehensive_visualizations(results, prompt, st.session_state.visualizer, current_msg_idx)
+
+                # Generate and display AI response after visualizations
+                with st.spinner("🧠 Generating comprehensive analysis..."):
+                    ai_response = generate_intelligent_response(results['data'], prompt)
+                st.markdown(ai_response)
+
+                # Store the complete response for persistence
+                complete_response = {
+                    "role": "assistant",
+                    "content": ai_response,
+                    "query_results": results,
+                    "has_visualizations": True,
+                    "query": prompt
+                }
+            else:
+                ai_response = "I understand you're asking about oceanographic data. I can help you explore temperature profiles, salinity data, BGC parameters, and regional comparisons. Could you try rephrasing your question or specify a location like 'Mumbai' or 'Arabian Sea'?"
+                st.markdown(ai_response)
+
+                complete_response = {
+                    "role": "assistant",
+                    "content": ai_response,
+                    "has_visualizations": False
+                }
+
+            # Add to session state
+            st.session_state.messages.append(complete_response)
 
 if __name__ == "__main__":
     main()
