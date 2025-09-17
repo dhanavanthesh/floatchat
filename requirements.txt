@@ -1,0 +1,16 @@
+streamlit
+pymongo
+groq
+plotly
+folium
+streamlit-folium
+chromadb
+pandas
+numpy
+python-dotenv
+geopy
+scikit-learn
+requests
+httpx
+xarray
+netcdf4
